@@ -7,6 +7,7 @@ from backend.db.history import save_analysis, get_history, get_analysis_by_id
 from backend.export.pdf_generator import generate_analysis_pdf
 from datetime import datetime
 import io
+import base64
 
 router = APIRouter()
 
@@ -114,7 +115,7 @@ async def chat_endpoint(request: ChatRequest):
     """
     Endpoint conversacional que detecta si el mensaje es SQL o chat.
     
-    - Si es SQL: ejecuta análisis completo
+    - Si es SQL: ejecuta análisis completo y genera PDF automáticamente
     - Si es conversación: responde con el LLM
     """
     try:
@@ -136,10 +137,19 @@ async def chat_endpoint(request: ChatRequest):
             except Exception as e:
                 print(f"Warning: Failed to save analysis: {e}")
             
+            # Generar PDF automáticamente
+            pdf_base64 = None
+            try:
+                pdf_bytes = generate_analysis_pdf(analysis_result)
+                pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+            except Exception as e:
+                print(f"Warning: Failed to generate PDF: {e}")
+            
             return ChatResponse(
                 type="analysis",
                 analysis=analysis_result,
-                message=None
+                message=None,
+                pdf_base64=pdf_base64
             )
         else:
             # Es conversación → chat con LLM
@@ -155,7 +165,8 @@ async def chat_endpoint(request: ChatRequest):
             return ChatResponse(
                 type="chat",
                 analysis=None,
-                message=response_message
+                message=response_message,
+                pdf_base64=None
             )
             
     except Exception as e:

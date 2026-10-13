@@ -39,3 +39,4 @@ class ChatResponse(BaseModel):
     type: str  # "analysis" o "chat"
     analysis: Optional[AnalyzeResponse] = None  # si type == "analysis"
     message: Optional[str] = None  # si type == "chat"
+    pdf_base64: Optional[str] = None  # PDF generado automáticamente en base64

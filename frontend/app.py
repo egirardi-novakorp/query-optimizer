@@ -3,6 +3,7 @@ import streamlit.components.v1 as components
 import httpx
 import json
 import difflib
+import base64
 from datetime import datetime
 from typing import Optional
 
@@ -316,8 +317,122 @@ def render_finding(finding):
     st.markdown("<br>", unsafe_allow_html=True)
 
 
+def render_concise_analysis(data, pdf_base64=None):
+    """Renderiza el análisis de forma concisa: mensaje conversacional + desglose por regla + PDF."""
+    
+    findings = data.get("findings", [])
+    summary = data.get("summary", {})
+    total_findings = summary.get("critical", 0) + summary.get("warning", 0) + summary.get("info", 0)
+    
+    # Si no hay hallazgos
+    if total_findings == 0:
+        st.markdown("Analicé tu query y no encontré problemas. ✅ **Se ve bien!**")
+        st.markdown("")
+        
+        # Verificar si hay query optimizada igual (por si el LLM sugirió algo)
+        if data.get("optimized_query"):
+            st.markdown("Igual generé algunas sugerencias de mejora que podés ver en el PDF.")
+            st.markdown("")
+    else:
+        # Agrupar findings por rule_id y severidad
+        rule_groups = {
+            "critical": {},
+            "warning": {},
+            "info": {}
+        }
+        
+        for finding in findings:
+            severity = finding.get("severity", "info")
+            rule_id = finding.get("rule_id", "")
+            rule_name = finding.get("rule_name", "")
+            
+            if rule_id not in rule_groups[severity]:
+                rule_groups[severity][rule_id] = {
+                    "name": rule_name,
+                    "count": 0
+                }
+            rule_groups[severity][rule_id]["count"] += 1
+        
+        # Construir mensaje
+        st.markdown(f"Analicé tu query. Encontré **{total_findings} hallazgos**:")
+        st.markdown("")
+        
+        # Críticos
+        if rule_groups["critical"]:
+            critical_count = sum(r["count"] for r in rule_groups["critical"].values())
+            st.markdown(f"🔴 **{critical_count} críticos:**")
+            for rule_id, rule_data in sorted(rule_groups["critical"].items()):
+                count_text = f"{rule_data['count']} casos" if rule_data['count'] > 1 else "1 caso"
+                st.markdown(f"- **{rule_id}** {rule_data['name']}: {count_text}")
+            st.markdown("")
+        
+        # Warnings
+        if rule_groups["warning"]:
+            warning_count = sum(r["count"] for r in rule_groups["warning"].values())
+            st.markdown(f"🟡 **{warning_count} warnings:**")
+            for rule_id, rule_data in sorted(rule_groups["warning"].items()):
+                count_text = f"{rule_data['count']} casos" if rule_data['count'] > 1 else "1 caso"
+                st.markdown(f"- **{rule_id}** {rule_data['name']}: {count_text}")
+            st.markdown("")
+        
+        # Informativos (si hay)
+        if rule_groups["info"]:
+            info_count = sum(r["count"] for r in rule_groups["info"].values())
+            st.markdown(f"🟢 **{info_count} informativos:**")
+            for rule_id, rule_data in sorted(rule_groups["info"].items()):
+                count_text = f"{rule_data['count']} casos" if rule_data['count'] > 1 else "1 caso"
+                st.markdown(f"- **{rule_id}** {rule_data['name']}: {count_text}")
+            st.markdown("")
+        
+        # Invitación a descargar PDF
+        st.markdown("**Descargá el PDF** para ver el detalle de cada hallazgo, las sugerencias y la query optimizada.")
+        st.markdown("")
+    
+    # Sugerencias de contexto adicional (si aplica)
+    suggestions = []
+    
+    # Verificar si hay R09 (full scan) y no hay DDL
+    has_r09 = any(f.get("rule_id") == "R09" for f in findings)
+    has_ddl = st.session_state.get("has_ddl", False)
+    
+    if has_r09 and not has_ddl:
+        suggestions.append("💡 **Tip:** Si me pasás el DDL de las tablas en el panel lateral, puedo verificar mejor los filtros de partición.")
+    
+    # Verificar si hay muchos hallazgos críticos y no hay EXPLAIN
+    has_explain = st.session_state.get("has_explain", False)
+    critical_count = summary.get("critical", 0)
+    
+    if critical_count >= 2 and not has_explain:
+        suggestions.append("💡 **Tip:** Si agregás el EXPLAIN plan en el panel lateral, puedo analizar el impacto en memoria y shuffles.")
+    
+    # Mostrar sugerencias
+    if suggestions:
+        st.markdown("")
+        for suggestion in suggestions:
+            st.markdown(suggestion)
+        st.markdown("")
+    
+    # Botón de descarga del PDF
+    if pdf_base64:
+        try:
+            pdf_bytes = base64.b64decode(pdf_base64)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            st.download_button(
+                label="📄 Descargar reporte PDF",
+                data=pdf_bytes,
+                file_name=f"query-analysis-{timestamp}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary"
+            )
+        except Exception as e:
+            st.error(f"Error decodificando PDF: {str(e)}")
+    else:
+        st.info("💡 El PDF no pudo generarse automáticamente, pero el análisis está completo.")
+
+
 def render_report(data):
-    """Renderiza el reporte visual del análisis."""
+    """Renderiza el reporte visual COMPLETO del análisis (LEGACY - para historial)."""
     
     # 1. Resumen con métricas
     summary = data.get("summary", {})
@@ -442,13 +557,14 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
     
     # Mensaje de bienvenida
-    welcome_message = """Hola! Soy el asistente del Query Optimizer. Pega una query SQL de Impala/Hive 
-y te doy un análisis con hallazgos y sugerencias de optimización.
+    welcome_message = """Hola! Soy el asistente del Query Optimizer de Novakorp. 
 
-También podés agregar contexto en el panel lateral (DDL de tablas, EXPLAIN plan, 
-tamaño de tablas) para un análisis más completo.
+**Podés:**
+- Pegar una query SQL de Impala/Hive
+- Arrastrar un archivo `.sql` o `.txt`
+- Preguntarme sobre el último análisis
 
-¿En qué puedo ayudarte hoy?"""
+El análisis completo con todos los hallazgos se genera automáticamente en PDF. ¿Arrancamos?"""
     
     st.session_state.messages.append({
         "role": "assistant",
@@ -559,7 +675,104 @@ for msg in st.session_state.messages:
             elif msg_type == "chat":
                 st.markdown(msg["content"])
             elif msg_type == "analysis" and "data" in msg:
-                render_report(msg["data"])
+                # Usar render_concise si hay PDF, render_report si es del historial
+                if msg.get("pdf_base64"):
+                    render_concise_analysis(msg["data"], msg.get("pdf_base64"))
+                else:
+                    render_report(msg["data"])
+
+# File uploader para archivos .sql
+st.markdown("**Arrastra un archivo .sql o pega tu query abajo:**")
+uploaded_file = st.file_uploader(
+    "Subir archivo SQL",
+    type=["sql", "txt"],
+    label_visibility="collapsed",
+    key="sql_file_uploader"
+)
+
+# Si se subió un archivo, procesarlo automáticamente
+if uploaded_file is not None and "last_uploaded_file" not in st.session_state:
+    st.session_state.last_uploaded_file = uploaded_file.name
+    try:
+        # Leer contenido del archivo
+        file_content = uploaded_file.read().decode("utf-8")
+        
+        # Agregar al historial de chat como si el usuario lo hubiera pegado
+        st.session_state.messages.append({
+            "role": "user",
+            "content": file_content
+        })
+        
+        # Procesar automáticamente
+        with st.chat_message("user", avatar="👤"):
+            st.code(file_content, language="sql")
+        
+        with st.chat_message("assistant", avatar="⚡"):
+            with st.spinner("🔍 Analizando query..."):
+                try:
+                    # Preparar historial
+                    history = []
+                    for msg in st.session_state.messages[-11:-1]:
+                        if msg["role"] == "user":
+                            history.append({"role": "user", "content": msg["content"]})
+                        elif msg.get("type") == "chat":
+                            history.append({"role": "assistant", "content": msg["content"]})
+                    
+                    # Guardar flags de contexto disponible
+                    st.session_state.has_ddl = bool(ddl and ddl.strip())
+                    st.session_state.has_explain = bool(explain_plan and explain_plan.strip())
+                    
+                    # Preparar request
+                    payload = {
+                        "message": file_content,
+                        "ddl": ddl if ddl and ddl.strip() else None,
+                        "explain_plan": explain_plan if explain_plan and explain_plan.strip() else None,
+                        "context": context if context and context.strip() else None,
+                        "history": history,
+                        "last_analysis": st.session_state.last_analysis
+                    }
+                    
+                    # POST al endpoint de chat
+                    response = httpx.post(
+                        "http://localhost:8001/api/chat",
+                        json=payload,
+                        timeout=90.0
+                    )
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        response_type = result.get("type")
+                        
+                        if response_type == "analysis":
+                            analysis_data = result.get("analysis")
+                            pdf_base64 = result.get("pdf_base64")
+                            
+                            # Guardar último análisis
+                            st.session_state.last_analysis = analysis_data
+                            
+                            # Guardar en historial con PDF
+                            st.session_state.messages.append({
+                                "role": "assistant",
+                                "type": "analysis",
+                                "data": analysis_data,
+                                "pdf_base64": pdf_base64
+                            })
+                            
+                            # Renderizar análisis conciso
+                            render_concise_analysis(analysis_data, pdf_base64)
+                    else:
+                        st.error(f"❌ Error {response.status_code}: {response.text}")
+                        
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+        
+        st.rerun()
+    except Exception as e:
+        st.error(f"❌ Error leyendo archivo: {str(e)}")
+
+# Limpiar flag si se cambió de archivo
+if uploaded_file is None and "last_uploaded_file" in st.session_state:
+    del st.session_state.last_uploaded_file
 
 # Input de chat
 if prompt := st.chat_input("Pega una query SQL o preguntame algo..."):
@@ -594,6 +807,10 @@ if prompt := st.chat_input("Pega una query SQL o preguntame algo..."):
                         elif msg.get("type") == "chat":
                             history.append({"role": "assistant", "content": msg["content"]})
                     
+                    # Guardar flags de contexto disponible
+                    st.session_state.has_ddl = bool(ddl and ddl.strip())
+                    st.session_state.has_explain = bool(explain_plan and explain_plan.strip())
+                    
                     # Preparar request
                     payload = {
                         "message": prompt,
@@ -616,29 +833,23 @@ if prompt := st.chat_input("Pega una query SQL o preguntame algo..."):
                         response_type = result.get("type")
                         
                         if response_type == "analysis":
-                            # Es un análisis → guardar y renderizar reporte
+                            # Es un análisis → guardar y renderizar análisis conciso
                             analysis_data = result.get("analysis")
-                            
-                            # Guardar request para PDF
-                            st.session_state.last_request = {
-                                "query": prompt,
-                                "ddl": ddl if ddl and ddl.strip() else None,
-                                "explain_plan": explain_plan if explain_plan and explain_plan.strip() else None,
-                                "context": context if context and context.strip() else None
-                            }
+                            pdf_base64 = result.get("pdf_base64")
                             
                             # Guardar último análisis
                             st.session_state.last_analysis = analysis_data
                             
-                            # Guardar en historial
+                            # Guardar en historial con PDF
                             st.session_state.messages.append({
                                 "role": "assistant",
                                 "type": "analysis",
-                                "data": analysis_data
+                                "data": analysis_data,
+                                "pdf_base64": pdf_base64
                             })
                             
-                            # Renderizar reporte
-                            render_report(analysis_data)
+                            # Renderizar análisis conciso
+                            render_concise_analysis(analysis_data, pdf_base64)
                             
                         else:  # type == "chat"
                             # Es conversación → mostrar mensaje
