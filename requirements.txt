@@ -1,0 +1,9 @@
+fastapi>=0.115.0
+uvicorn>=0.32.0
+streamlit>=1.40.0
+sqlglot>=26.0.0
+google-generativeai>=0.8.0
+pydantic>=2.10.0
+pydantic-settings>=2.0.0
+httpx>=0.28.0
+fpdf2>=2.7.0

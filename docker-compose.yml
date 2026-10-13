@@ -1,0 +1,17 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    container_name: gp-query-optimizer
+    ports:
+      - "8001:8001"
+      - "8502:8502"
+    volumes:
+      - ./backend:/app/backend
+      - ./frontend:/app/frontend
+    env_file:
+      - .env
+    command: >
+      sh -c "uvicorn backend.main:app --host 0.0.0.0 --port 8001 --reload &
+             streamlit run frontend/app.py --server.port 8502 --server.address 0.0.0.0 --server.headless true &&
+             wait"
